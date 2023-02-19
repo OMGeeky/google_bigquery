@@ -2,5 +2,7 @@
 
 rustflags = [
 #    "--cfg", "man_impl=\"true\"",
-#    "--cfg", "man_impl_has_client=\"false\""
+    "--cfg", "debug_assertions=\"true\"",
+    "--cfg", "man_impl_has_client=\"false\""
+
 ]        # custom flags to pass to all compiler invocations

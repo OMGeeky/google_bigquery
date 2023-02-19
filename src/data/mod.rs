@@ -19,6 +19,7 @@ pub trait BigDataTable<'a, TABLE, TPK>
 : HasBigQueryClient<'a>
 + BigDataTableBaseConvenience<'a, TABLE, TPK>
 + BigDataTableBase<'a, TABLE, TPK>
++ Default
     where TPK: BigDataValueType + FromStr + Debug {
     async fn from_pk(
         client: &'a BigqueryClient,
@@ -37,7 +38,7 @@ pub trait BigDataTable<'a, TABLE, TPK>
 
 impl<'a, TABLE, TPK> BigDataTable<'a, TABLE, TPK> for TABLE
 where
-    TABLE: HasBigQueryClient<'a> + BigDataTableBaseConvenience<'a, TABLE, TPK>,
+    TABLE: HasBigQueryClient<'a> + BigDataTableBaseConvenience<'a, TABLE, TPK> + Default,
     TPK: BigDataValueType + FromStr + Debug,
     <TPK as FromStr>::Err: Debug
 {
@@ -51,10 +52,10 @@ where
         let project_id = self.get_client().get_project_id();
 
         let table_identifier = self.get_identifier().await?;
-        let w = Self::get_base_where();
+        let where_clause = Self::get_base_where();
         // region check for existing data
         let exists_row: bool;
-        let existing_count = format!("select count(*) from {} where {} limit 1", table_identifier, w);
+        let existing_count = format!("select count(*) from {} where {} limit 1", table_identifier, where_clause);
 
         let req = google_bigquery2::api::QueryRequest {
             query: Some(existing_count),
@@ -63,13 +64,13 @@ where
             ..Default::default()
         };
 
-
-        let (res, query_res) = self.get_client().get_client().jobs().query(req, project_id)
-            .doit().await?;
-
-        if res.status() != 200 {
-            return Err(format!("Wrong status code returned! ({})", res.status()).into());
-        }
+        let (_, query_res) = self.run_query(req, project_id).await?;
+        // let (res, query_res) = self.get_client().get_client().jobs().query(req, project_id)
+        //     .doit().await?;
+        //
+        // if res.status() != 200 {
+        //     return Err(format!("Wrong status code returned! ({})", res.status()).into());
+        // }
 
         if let None = &query_res.rows {
             return Err("No rows returned!".into());
@@ -98,7 +99,7 @@ where
         // region update or insert
 
         let query = match exists_row {
-            true => format!("update {} set {} where {}", table_identifier, self.get_query_fields_update_str(), w),
+            true => format!("update {} set {} where {}", table_identifier, self.get_query_fields_update_str(), where_clause),
             false => format!("insert into {} ({}, {}) values(@__{}, {})", table_identifier,
                              Self::get_pk_name(),
                              Self::get_query_fields_str(),
@@ -115,12 +116,14 @@ where
             ..Default::default()
         };
 
-        let (res, _) = self.get_client().get_client().jobs().query(req, project_id)
-            .doit().await?;
 
-        if res.status() != 200 {
-            return Err(format!("Wrong status code returned! ({})", res.status()).into());
-        }
+        let (_, _) = self.run_query(req, project_id).await?;
+        // let (res, _) = self.get_client().get_client().jobs().query(req, project_id)
+        //     .doit().await?;
+        //
+        // if res.status() != 200 {
+        //     return Err(format!("Wrong status code returned! ({})", res.status()).into());
+        // }
 
         //endregion
 
@@ -145,6 +148,7 @@ where
             return Err(format!("Wrong amount of data returned! ({})", rows.len()).into());
         }
         let mut index_to_name_mapping: HashMap<String, usize> = get_name_index_mapping(query_res.schema);
+        println!("index_to_name_mapping: {:?}", index_to_name_mapping);
 
         let row = &rows[0];
         self.write_from_table_row(row, &index_to_name_mapping)

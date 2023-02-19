@@ -5,7 +5,7 @@ use std::any::Any;
 
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
-use syn::{DeriveInput, parse_macro_input};
+use syn::{DeriveInput, parse_macro_input, Type};
 
 struct Field {
     field_ident: quote::__private::Ident,
@@ -15,13 +15,7 @@ struct Field {
     required: bool,
 }
 
-#[proc_macro_derive(BigDataTable,
-attributes(primary_key, client, db_name, db_ignore, required))]
-pub fn big_data_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let ast = syn::parse(input).unwrap();
-    let tokens = implement_derive(&ast);
-    tokens.into()
-}
+//region HasBigQueryClient derive
 
 #[proc_macro_derive(HasBigQueryClient, attributes(client))]
 pub fn has_big_query_client(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -31,12 +25,34 @@ pub fn has_big_query_client(input: proc_macro::TokenStream) -> proc_macro::Token
 }
 
 fn implement_derive_has_big_query_client(ast: &DeriveInput) -> TokenStream {
+    fn implement_has_bigquery_client_trait(table_ident: &Ident, client_ident: &Ident) -> TokenStream {
+        let implementation_has_bigquery_client = quote! {
+            impl<'a> HasBigQueryClient<'a> for #table_ident<'a> {
+                fn get_client(&self) -> &'a BigqueryClient {
+                    self.#client_ident.unwrap()
+                }
+            }
+        };
+        implementation_has_bigquery_client
+    }
+
     let table_ident = &ast.ident;
     let client = get_client_field(&ast);
     let implementation_has_bigquery_client = implement_has_bigquery_client_trait(table_ident, &client.field_ident);
     quote! {
         #implementation_has_bigquery_client;
     }
+}
+
+//endregion HasBigQueryClient derive
+
+//region BigDataTable derive
+#[proc_macro_derive(BigDataTable,
+attributes(primary_key, client, db_name, db_ignore, required))]
+pub fn big_data_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let ast = syn::parse(input).unwrap();
+    let tokens = implement_derive(&ast);
+    tokens.into()
 }
 
 fn implement_derive(ast: &DeriveInput) -> TokenStream {
@@ -59,17 +75,16 @@ fn implement_big_data_table_base_trait(table_ident: &Ident, primary_key: &Field,
 
     let get_pk_name = get_get_pk_name(primary_key);
     let get_pk_value = get_get_pk_value(primary_key);
+
+    db_fields.retain(|f| f.local_name != client_field.local_name);
+
     let get_field_name = get_get_field_name(ast, &db_fields);
-
-    db_fields.retain(|f|f.local_name != client_field.local_name);
-
+    let get_query_fields = get_get_query_fields(&db_fields);
     let write_from_table_row = get_write_from_table_row(&db_fields);
-    let get_query_fields = get_get_query_fields(ast);
     let get_table_name = get_get_table_name(&table_ident);
-    let create_with_pk = get_create_with_pk(ast);
-    let create_from_table_row = get_create_from_table_row(ast);
-    let get_query_fields_update_str = get_get_query_fields_update_str(ast);
-    let get_all_query_parameters = get_get_all_query_parameters(ast);
+    let create_with_pk = get_create_with_pk(&primary_key, &client_field);
+    let create_from_table_row = get_create_from_table_row(&pk_ty);
+    let get_all_query_parameters = get_get_all_query_parameters(&db_fields);
     quote! {
         impl<'a> BigDataTableBase<'a, #table_ident<'a>, #pk_ty> for #table_ident<'a>  {
             #get_pk_name
@@ -80,7 +95,6 @@ fn implement_big_data_table_base_trait(table_ident: &Ident, primary_key: &Field,
             #create_from_table_row
             #write_from_table_row
             #get_pk_value
-            #get_query_fields_update_str
             #get_all_query_parameters
         }
     }
@@ -89,10 +103,11 @@ fn implement_big_data_table_base_trait(table_ident: &Ident, primary_key: &Field,
 //region BigDataTableBase functions
 
 fn get_get_pk_name(primary_key_field: &Field) -> TokenStream {
-    let pk_name = &primary_key_field.db_name;
+    let pk_name = &primary_key_field.local_name;
     quote! {
         fn get_pk_name() -> String {
-            Self::get_field_name(stringify!(#pk_name)).unwrap()
+            let name = #pk_name;
+            Self::get_field_name(name).unwrap()
         }
     }
 }
@@ -106,18 +121,28 @@ fn get_get_pk_value(pk_field: &Field) -> TokenStream {
     }
 }
 
-fn get_get_query_fields_update_str(ast: &DeriveInput) -> TokenStream {
-    quote! {
-        fn get_query_fields_update_str(&self) -> String {
-            todo!();//TODO get_query_fields_update_str
+fn get_get_all_query_parameters(db_fields: &Vec<Field>) -> TokenStream {
+    fn get_all_query_parameters(field: &Field) -> TokenStream {
+        let field_ident = &field.field_ident;
+        match field.required {
+            true => quote! {
+                parameters.push(Self::get_query_param(&Self::get_field_name(stringify!(#field_ident)).unwrap(), &Some(self.#field_ident)));
+            },
+            false => quote! {
+                parameters.push(Self::get_query_param(&Self::get_field_name(stringify!(#field_ident)).unwrap(), &self.#field_ident));
+            }
         }
     }
-}
-
-fn get_get_all_query_parameters(ast: &DeriveInput) -> TokenStream {
+    let tokens: Vec<TokenStream> = db_fields.iter().map(|field| get_all_query_parameters(field)).collect();
     quote! {
         fn get_all_query_parameters(&self) -> Vec<QueryParameter> {
-            todo!();//TODO get_all_query_parameters
+            let mut parameters = Vec::new();
+
+            // parameters.push(Self::get_query_param(&Self::get_field_name(stringify!(info1)).unwrap(), &self.info1));
+
+            #(#tokens)*
+
+            parameters
         }
     }
 }
@@ -138,9 +163,12 @@ fn get_write_from_table_row(db_fields: &Vec<Field>) -> TokenStream {
             .unwrap();
              */
             quote! {
-                let index = *index_to_name_mapping.get(Self::get_field_name(stringify!(#field_name))?.as_str()).unwrap();
+                println!("get_write_from_table_row_single_field: field_name: (1) {}", #field_name);
+                let index = *index_to_name_mapping.get(#field_name)
+                .expect(format!("could not find index for field in mapping!: (1) {}", #field_name).as_str());
                 self.#field_ident = row.f.as_ref()
-                    .unwrap()[index]
+                    .expect("row.f is None (1)")
+                    [index]
                     .v.as_ref()
                     .unwrap()
                     .parse()
@@ -155,9 +183,13 @@ fn get_write_from_table_row(db_fields: &Vec<Field>) -> TokenStream {
         };
              */
             quote! {
-                let index = *index_to_name_mapping.get(Self::get_field_name(stringify!(#field_name))?.as_str()).unwrap();
-                self.#field_ident = match row.f.as_ref().unwrap()[index].v.as_ref() {
-                    Some(v) => Some(v.parse()?),
+                let index = *index_to_name_mapping.get(#field_name)
+                .expect(format!("could not find index for field in mapping!: (2) {}", #field_name).as_str());
+                println!("get_write_from_table_row_single_field: field_name: (2) {} at index: {}", #field_name, index);
+                self.#field_ident = match row.f.as_ref()
+                    .expect("row.f is None (1)")
+                    [index].v.as_ref() {
+                    Some(v) => Some(v.parse().expect(format!("could not parse field: {} with value {}",stringify!(#field_name),v).as_str())),
                     None => None
                 };
             }
@@ -173,24 +205,42 @@ fn get_write_from_table_row(db_fields: &Vec<Field>) -> TokenStream {
     }
 }
 
-fn get_create_from_table_row(ast: &DeriveInput) -> TokenStream {
+fn get_create_from_table_row(pk_ty: &Type) -> TokenStream {
     quote! {
-
-    fn create_from_table_row(client: &'a BigqueryClient,
-                             row: &google_bigquery2::api::TableRow,
-                             index_to_name_mapping: &HashMap<String, usize>)
-                             -> Result<Self, Box<dyn Error>>
-        where
-            Self: Sized{
-            todo!();//TODO create_from_table_row
+        fn create_from_table_row(client: &'a BigqueryClient,
+                                 row: &google_bigquery2::api::TableRow,
+                                 index_to_name_mapping: &HashMap<String, usize>)
+                                 -> Result<Self, Box<dyn Error>>
+            where
+                Self: Sized {
+            //TODO
+            // create_from_table_row maybe push this to the convenience part.
+            // NOTE: its a bit weird with the unwrap and the pk type if not implemented here, but I believe :)
+            let pk_index = *index_to_name_mapping.get(&Self::get_pk_name()).unwrap();
+            let pk = row
+                .f.as_ref()
+                .unwrap()[pk_index]
+                .v.as_ref()
+                .unwrap()
+                .parse::<#pk_ty>()
+                .unwrap();
+            let mut res = Self::create_with_pk(client, pk);
+            res.write_from_table_row(row, index_to_name_mapping)?;
+            Ok(res)
         }
     }
 }
 
-fn get_create_with_pk(ast: &DeriveInput) -> TokenStream {
+fn get_create_with_pk(pk_field: &Field, client_field: &Field) -> TokenStream {
+    let pk_ident = &pk_field.field_ident;
+    let client_ident = &client_field.field_ident;
     quote! {
         fn create_with_pk(client: &'a BigqueryClient, pk: i64) -> Self {
-            todo!();//TODO create_with_pk
+            Self {
+                #pk_ident: pk,
+                #client_ident: Some(client),
+                ..Default::default()
+            }
         }
     }
 }
@@ -203,35 +253,56 @@ fn get_get_table_name(table_ident: &Ident) -> TokenStream {
     }
 }
 
-fn get_get_query_fields(ast: &DeriveInput) -> TokenStream {
+fn get_get_query_fields(db_fields: &Vec<Field>) -> TokenStream {
+    fn get_query_fields_single_field(field: &Field) -> TokenStream {
+        let field_ident = &field.field_ident;
+        let field_name = &field.db_name;
+        quote! {
+            fields.insert(stringify!(#field_ident).to_string(), Self::get_field_name(&stringify!(#field_ident).to_string()).unwrap());
+        }
+    }
+
+    let tokens: Vec<TokenStream> = db_fields.iter().map(|field| get_query_fields_single_field(field)).collect();
+
     quote! {
         fn get_query_fields() -> HashMap<String, String> {
-            todo!();//TODO get_query_fields
+            let mut fields = HashMap::new();
+            #(#tokens)*
+            println!("get_query_fields: fields: {:?}", fields);
+            fields
         }
     }
 }
 
 fn get_get_field_name(ast: &DeriveInput, db_fields: &Vec<Field>) -> TokenStream {
-    let mut mapping: Vec<(&Ident, String)> = Vec::new();
-    for db_field in db_fields {
-        let field_name_local = &db_field.field_ident;
-        let mut field_name_remote = &db_field.db_name;
-        mapping.push((field_name_local, field_name_remote.to_string()));
-    }
-
-    let mapping_tok: Vec<TokenStream> = mapping.iter().map(|(field_name_local, field_name_remote)| {
+    // let mut mapping: Vec<(&Ident, String)> = Vec::new();
+    // for db_field in db_fields {
+    //     let field_name_local = &db_field.field_ident;
+    //     let mut field_name_remote = &db_field.db_name;
+    //     mapping.push((field_name_local, field_name_remote.to_string()));
+    // }
+    //
+    // let mapping_tok: Vec<TokenStream> = mapping.iter().map(|(field_name_local, field_name_remote)| {
+    //     quote! {
+    //         stringify!(#field_name_local) => Ok(#field_name_remote.to_string()),
+    //     }
+    // }).collect();
+    fn get_field_name_single_field(field: &Field) -> TokenStream {
+        let field_name_local = &field.field_ident.to_string();
+        let mut field_name_remote = &field.db_name;
         quote! {
             #field_name_local => Ok(#field_name_remote.to_string()),
         }
-    }).collect();
-
-
+    }
+    let mapping_tok: Vec<TokenStream> = db_fields.iter().map(get_field_name_single_field).collect();
+    let possible_fields: String = db_fields.iter().map(|field| field.field_ident.to_string()).collect::<Vec<String>>().join(", ");
     quote! {
         fn get_field_name(field_name: &str) -> Result<String, Box<dyn Error>> {
+            println!("get_field_name: field_name: {:?}", field_name);
             match field_name {
                 //ex.: "row_id" => Ok("Id".to_string()),
                 #(#mapping_tok)*
-                _ => Err("Field not found".into()),
+                _ => Err(format!("Field not found {}\nPlease choose one of the following: {}", field_name, #possible_fields).into()),
             }
         }
     }
@@ -239,16 +310,7 @@ fn get_get_field_name(ast: &DeriveInput, db_fields: &Vec<Field>) -> TokenStream 
 
 //endregion
 
-fn implement_has_bigquery_client_trait(table_ident: &Ident, client_ident: &Ident) -> TokenStream {
-    let implementation_has_bigquery_client = quote! {
-        impl<'a> HasBigQueryClient<'a> for #table_ident<'a> {
-            fn get_client(&self) -> &'a BigqueryClient {
-                self.#client_ident
-            }
-        }
-    };
-    implementation_has_bigquery_client
-}
+//endregion BigDataTable derive
 
 //region Helper functions
 
@@ -400,39 +462,3 @@ fn get_attributed_fields(data: &syn::Data, attribute_name: &str) -> Vec<Field> {
 }
 
 //endregion
-
-/*
-/// Example of [function-like procedural macro][1].
-///
-/// [1]: https://doc.rust-lang.org/reference/procedural-macros.html#function-like-procedural-macros
-#[proc_macro]
-pub fn my_macro(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-
-    let tokens = quote! {
-        #input
-
-        struct Hello;
-    };
-
-    tokens.into()
-}
-*/
-
-/*
-/// Example of user-defined [procedural macro attribute][1].
-///
-/// [1]: https://doc.rust-lang.org/reference/procedural-macros.html#attribute-macros
-#[proc_macro_attribute]
-pub fn my_attribute(_args: TokenStream, input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-
-    let tokens = quote! {
-        #input
-
-        struct Hello;
-    };
-
-    tokens.into()
-}
-*/

@@ -17,7 +17,7 @@ pub trait BigDataTableBase<'a, TABLE, TPK>: HasBigQueryClient<'a>
                             index_to_name_mapping: &HashMap<String, usize>)
                             -> Result<(), Box<dyn Error>>;
     fn get_pk_value(&self) -> TPK;
-    fn get_query_fields_update_str(&self) -> String;
+    // fn get_query_fields_update_str(&self) -> String;
     fn get_all_query_parameters(&self) -> Vec<google_bigquery2::api::QueryParameter>;
 
     fn create_from_table_row(client: &'a BigqueryClient,

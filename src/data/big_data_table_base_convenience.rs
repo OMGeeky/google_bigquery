@@ -3,7 +3,8 @@ use std::error::Error;
 use std::fmt::Debug;
 use std::str::FromStr;
 
-use google_bigquery2::api::{QueryParameter, QueryParameterType, QueryParameterValue};
+use google_bigquery2::api::{QueryParameter, QueryParameterType, QueryParameterValue, QueryRequest};
+use google_bigquery2::hyper::{Body, Response};
 
 use crate::client::BigqueryClient;
 use crate::data::BigDataTableBase;
@@ -15,9 +16,19 @@ pub trait BigDataTableBaseConvenience<'a, TABLE, TPK>
     fn get_pk_param(&self) -> google_bigquery2::api::QueryParameter;
     fn get_query_fields_str() -> String;
     fn get_query_fields_insert_str() -> String;
-
+    fn get_query_fields_update_str(&self) -> String;
     fn get_where_part(field_name: &str, is_comparing_to_null: bool) -> String;
+    //region run query
+    async fn run_query(&self, req: QueryRequest, project_id: &str)
+                       -> Result<(Response<Body>, google_bigquery2::api::QueryResponse), Box<dyn Error>>;
 
+    async fn run_query_on_client(client: &'a BigqueryClient,
+                                 req: QueryRequest,
+                                 project_id: &str)
+                                 -> Result<(Response<Body>, google_bigquery2::api::QueryResponse), Box<dyn Error>>;
+    //endregion run query
+
+    //region run get query
     async fn run_get_query(&self, query: &str, project_id: &str)
                            -> Result<google_bigquery2::api::QueryResponse, Box<dyn Error>>;
 
@@ -32,6 +43,8 @@ pub trait BigDataTableBaseConvenience<'a, TABLE, TPK>
                                                  parameters: Vec<google_bigquery2::api::QueryParameter>,
                                                  project_id: &str)
                                                  -> Result<google_bigquery2::api::QueryResponse, Box<dyn Error>>;
+    //endregion
+
 
     // async fn get_identifier_and_base_where(&self) -> Result<(String, String), Box<dyn Error>>;
     async fn get_identifier(&self) -> Result<String, Box<dyn Error>>;
@@ -91,6 +104,17 @@ impl<'a, TABLE, TPK> BigDataTableBaseConvenience<'a, TABLE, TPK> for TABLE
             .join(", ")
     }
 
+    fn get_query_fields_update_str(&self) -> String {
+        let x = Self::get_query_fields();
+        let pk_name = Self::get_pk_name();
+        let mut vec = x.values()
+            .filter(|k| *k != &pk_name)
+            .map(|k| format!("{} = @__{}", k, k))
+            .collect::<Vec<String>>();
+        // vec.sort();
+        let update_str = vec.join(", ");
+        update_str
+    }
     fn get_where_part(field_name: &str, is_comparing_to_null: bool) -> String {
         if is_comparing_to_null {
             format!("{} IS NULL", field_name)
@@ -99,6 +123,42 @@ impl<'a, TABLE, TPK> BigDataTableBaseConvenience<'a, TABLE, TPK> for TABLE
         }
     }
 
+    //region run query
+
+    async fn run_query(&self, req: QueryRequest, project_id: &str)
+                       -> Result<(Response<Body>, google_bigquery2::api::QueryResponse), Box<dyn Error>> {
+        Self::run_query_on_client(self.get_client(), req, project_id).await
+    }
+
+    async fn run_query_on_client(client: &'a BigqueryClient,
+                                 req: QueryRequest,
+                                 project_id: &str)
+                                 -> Result<(Response<Body>, google_bigquery2::api::QueryResponse), Box<dyn Error>> {
+        #[cfg(debug_assertions="true")]
+        {
+            println!("Query: {}", &req.query.as_ref().unwrap());//There has to be a query, this would not make any sense otherwise
+            if let Some(parameters) = &req.query_parameters {
+                println!("Parameters: {}", parameters.len());
+                for (i, param) in parameters.iter().enumerate() {
+                    println!("{:2}: {:?}", i, param);
+                }
+            } else {
+                println!("Parameters: None");
+            }
+            println!();
+        }
+
+
+        let (res, query_res) = client.get_client().jobs().query(req, project_id)
+            .doit().await?;
+
+        if res.status() != 200 {
+            return Err(format!("Wrong status code returned! ({})", res.status()).into());
+        }
+
+        Ok((res, query_res))
+    }
+    //endregion run query
 
     async fn run_get_query(&self, query: &str, project_id: &str)
                            -> Result<google_bigquery2::api::QueryResponse, Box<dyn Error>> {
@@ -121,24 +181,19 @@ impl<'a, TABLE, TPK> BigDataTableBaseConvenience<'a, TABLE, TPK> for TABLE
                                                  parameters: Vec<google_bigquery2::api::QueryParameter>,
                                                  project_id: &str)
                                                  -> Result<google_bigquery2::api::QueryResponse, Box<dyn Error>> {
-        println!("Query: {}", query);
-        println!("Parameters: {}", parameters.len());
-        for (i, param) in parameters.iter().enumerate() {
-            println!("{:2}: {:?}", i, param);
-        }
-        println!();
         let req = google_bigquery2::api::QueryRequest {
             query: Some(query.to_string()),
             query_parameters: Some(parameters),
             use_legacy_sql: Some(false),
             ..Default::default()
         };
-        let (res, query_res) = client.get_client().jobs().query(req, project_id)
-            .doit().await?;
-
-        if res.status() != 200 {
-            return Err(format!("Wrong status code returned! ({})", res.status()).into());
-        }
+        let (_, query_res) = Self::run_query_on_client(client, req, project_id).await?;
+        // let (res, query_res) = client.get_client().jobs().query(req, project_id)
+        //     .doit().await?;
+        //
+        // if res.status() != 200 {
+        //     return Err(format!("Wrong status code returned! ({})", res.status()).into());
+        // }
         Ok(query_res)
     }
     // async fn get_identifier_and_base_where(&self)
@@ -166,13 +221,13 @@ impl<'a, TABLE, TPK> BigDataTableBaseConvenience<'a, TABLE, TPK> for TABLE
     default fn get_query_param<TField: BigDataValueType>(field_name: &str, field_value: &Option<TField>) -> google_bigquery2::api::QueryParameter
     {
         let type_to_string: String = TField::to_bigquery_type();
-        let value: Option<google_bigquery2::api::QueryParameterValue> = match field_value {
-            Some(value) => Some(google_bigquery2::api::QueryParameterValue {
-                value: Some(value.to_bigquery_param_value()),//TODO: maybe add a way to use array types
-                ..Default::default()
-            }),
-            None => None,
-        };
+        let value: Option<google_bigquery2::api::QueryParameterValue> = Some(google_bigquery2::api::QueryParameterValue {
+            value:  match field_value {
+                Some(value) =>Some(value.to_bigquery_param_value()),//TODO: maybe add a way to use array types
+                None => None,
+            },
+            ..Default::default()
+        });
 
         google_bigquery2::api::QueryParameter {
             name: Some(format!("__{}", field_name.clone())),

@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 
-use google_bigquery2::Bigquery;
+use google_bigquery2::{Bigquery, hyper, hyper_rustls, oauth2};
 use google_bigquery2::hyper::client::HttpConnector;
 use google_bigquery2::hyper_rustls::HttpsConnector;
 
@@ -11,6 +11,28 @@ pub struct BigqueryClient {
     client: Bigquery<HttpsConnector<HttpConnector>>,
     project_id: String,
     dataset_id: String,
+}
+
+impl BigqueryClient {
+    pub(crate) fn empty() -> &'static BigqueryClient {
+        todo!("Implement BigqueryClient::empty() or throw an error if it's not possible or something.");
+        // let hyper_client = hyper::Client::builder().build(
+        //     hyper_rustls::HttpsConnectorBuilder::new()
+        //         .with_native_roots()
+        //         .https_or_http()
+        //         .enable_http1()
+        //         .enable_http2()
+        //         .build(),
+        // );
+        //
+        // let auth = oauth2::ServiceAccountAuthenticator::with_client();
+        // let client =  Bigquery::new(hyper_client,auth);
+        // Self {
+        //     dataset_id: Default::default(),
+        //     project_id: Default::default(),
+        //     client,
+        // }
+    }
 }
 
 impl BigqueryClient {

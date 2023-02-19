@@ -20,6 +20,37 @@ use super::*;
 // }
 
 #[tokio::test]
+async fn save() {
+    let client = get_test_client().await;
+
+    let mut q = Infos::load_by_field(&client, stringify!(info1), Some("a"), 10).await.unwrap();
+    assert_eq!(q.len(), 1);
+
+    let mut i1 = &mut q[0];
+    assert_eq!(i1.row_id, 3);
+    assert_eq!(i1.info3, Some("c".to_string()));
+    assert_eq!(i1.info2, None);
+
+    i1.info2 = Some("b".to_string());
+    i1.save_to_bigquery().await.unwrap();
+
+    assert_eq!(i1.info2, Some("b".to_string()));
+    i1.info2 = Some("c".to_string());
+    assert_eq!(i1.info2, Some("c".to_string()));
+
+    i1.load_from_bigquery().await.unwrap();
+    assert_eq!(i1.info2, Some("b".to_string()));
+
+    i1.info2 = None;
+    i1.save_to_bigquery().await.unwrap();
+    i1.load_from_bigquery().await.unwrap();
+
+    assert_eq!(i1.row_id, 3);
+    assert_eq!(i1.info3, Some("c".to_string()));
+    assert_eq!(i1.info2, None);
+}
+
+#[tokio::test]
 async fn load_by_field() {
     let client = get_test_client().await;
 
@@ -31,7 +62,7 @@ async fn load_by_field() {
     assert_eq!(i1.info3, Some("c".to_string()));
 
     let mut q = Infos::load_by_field(&client, stringify!(yes), Some(true), 10).await.unwrap();
-    // q.sort_by(|a, b| a.row_id.cmp(&b.row_id));
+    q.sort_by(|a, b| a.row_id.cmp(&b.row_id));
     assert_eq!(q.len(), 3);
 
     let i2 = &q[0];
@@ -76,33 +107,49 @@ async fn get_test_client() -> BigqueryClient {
 }
 
 #[derive(Debug)]
-#[cfg_attr(not(man_impl_has_client="false"), derive(HasBigQueryClient))]
-#[cfg_attr(not(man_impl="true"), derive(BigDataTable))]
+#[cfg_attr(man_impl_has_client = "false", derive(HasBigQueryClient))]
+#[cfg_attr(not(man_impl = "true"), derive(BigDataTable))]
 pub struct Infos<'a> {
-    #[cfg_attr(not(man_impl="true"), primary_key)]
-    #[cfg_attr(not(man_impl="true"), required)]
-    #[cfg_attr(not(man_impl="true"), db_name("Id"))]
+    #[cfg_attr(not(man_impl = "true"), primary_key)]
+    #[cfg_attr(not(man_impl = "true"), required)]
+    #[cfg_attr(not(man_impl = "true"), db_name("Id"))]
     row_id: i64,
-    #[cfg_attr(any(not(man_impl="true"), not(man_impl_has_client="false")), client)]
-    client: &'a BigqueryClient,
+    #[cfg_attr(any(not(man_impl = "true"), man_impl_has_client = "false"), client)]
+    /// This client should never be left as None, doing so will cause a panic when trying to use it
+    client: Option<&'a BigqueryClient>,
     info1: Option<String>,
-    // #[cfg_attr(not(man_impl="true"), db_name("info"))]
+    #[cfg_attr(not(man_impl="true"), db_name("info"))]
     info2: Option<String>,
     info3: Option<String>,
-    // #[cfg_attr(not(man_impl="true"), db_name("info4i"))]
+    #[cfg_attr(not(man_impl="true"), db_name("info4i"))]
     int_info4: Option<i64>,
     yes: Option<bool>,
 }
 
 
-// #[cfg(any(man_impl="true", not(man_impl_has_client="false")))]
-// impl<'a> HasBigQueryClient<'a> for Infos<'a> {
-//     fn get_client(&self) -> &'a BigqueryClient {
-//         self.client
-//     }
-// }
+#[cfg(not(man_impl_has_client="false"))]
+impl<'a> HasBigQueryClient<'a> for Infos<'a> {
+    fn get_client(&self) -> &'a BigqueryClient {
+        self.client.unwrap()
+    }
+}
 
-#[cfg(man_impl="true")]
+impl<'a> Default for Infos<'a> {
+    fn default() -> Self {
+        Self {
+            // client: &BigqueryClient::new("none", "none", None).await.unwrap(),
+            client: None,
+            row_id: -9999,
+            info1: Default::default(),
+            info2: Default::default(),
+            info3: Default::default(),
+            int_info4: Default::default(),
+            yes: Default::default(),
+        }
+    }
+}
+
+#[cfg(man_impl = "true")]
 impl<'a> BigDataTableBase<'a, Infos<'a>, i64> for Infos<'a> {
     fn get_pk_name() -> String {
         Self::get_field_name(stringify!(row_id)).unwrap()
@@ -131,6 +178,7 @@ impl<'a> BigDataTableBase<'a, Infos<'a>, i64> for Infos<'a> {
         //TODO: decide if the primary key should be included in the query fields
         fields.insert(stringify!(row_id).to_string(), Self::get_field_name(&stringify!(row_id).to_string()).unwrap());
 
+        println!("get_query_fields: fields: {:?}", fields);
         fields
     }
 
@@ -139,18 +187,12 @@ impl<'a> BigDataTableBase<'a, Infos<'a>, i64> for Infos<'a> {
     }
 
     fn create_with_pk(client: &'a BigqueryClient, pk: i64) -> Self {
-        let mut res = Self {
+        Self {
             row_id: pk,
-            client,
-            info1: None,
-            info2: None,
-            info3: None,
-            int_info4: None,
-            yes: None,
-        };
-        res
+            client: Some(client),
+            ..Default::default()
+        }
     }
-
 
     fn write_from_table_row(&mut self,
                             row: &google_bigquery2::api::TableRow,
@@ -195,21 +237,34 @@ impl<'a> BigDataTableBase<'a, Infos<'a>, i64> for Infos<'a> {
         self.row_id
     }
 
-
+    /*
     fn get_query_fields_update_str(&self) -> String {
-        let mut fields = String::new();
-        let info1 = Self::get_field_name(stringify!(info1)).unwrap();
-        fields.push_str(&format!("{} = @__{}, ", info1, info1));
-        let info2 = Self::get_field_name(stringify!(info2)).unwrap();
-        fields.push_str(&format!("{} = @__{}, ", info2, info2));
-        let info3 = Self::get_field_name(stringify!(info3)).unwrap();
-        fields.push_str(&format!("{} = @__{}, ", info3, info3));
-        let int_info4 = Self::get_field_name(stringify!(int_info4)).unwrap();
-        fields.push_str(&format!("{} = @__{}, ", int_info4, int_info4));
-        let yes = Self::get_field_name(stringify!(yes)).unwrap();
-        fields.push_str(&format!("{} = @__{}", yes, yes));
-        fields
-    }
+        let x = Self::get_query_fields();
+        let pk_name = Self::get_pk_name();
+        let mut vec = x.values()
+            .filter(|k| *k != &pk_name)
+            .map(|k| format!("{} = @__{}", k, k))
+            .collect::<Vec<String>>();
+        vec.sort();
+        let x = vec
+            .join(", ");
+
+        // let mut fields = String::new();
+        // let info1 = Self::get_field_name(stringify!(info1)).unwrap();
+        // fields.push_str(&format!("{} = @__{}, ", info1, info1));
+        // let info2 = Self::get_field_name(stringify!(info2)).unwrap();
+        // fields.push_str(&format!("{} = @__{}, ", info2, info2));
+        // let info3 = Self::get_field_name(stringify!(info3)).unwrap();
+        // fields.push_str(&format!("{} = @__{}, ", info3, info3));
+        // let int_info4 = Self::get_field_name(stringify!(int_info4)).unwrap();
+        // fields.push_str(&format!("{} = @__{}, ", int_info4, int_info4));
+        // let yes = Self::get_field_name(stringify!(yes)).unwrap();
+        // fields.push_str(&format!("{} = @__{}", yes, yes));
+        // println!("fields: {}", fields);
+        println!("x     : {}", x);
+        // fields
+        x
+    }*/
 
     fn get_all_query_parameters(&self) -> Vec<QueryParameter> {
         let mut parameters = Vec::new();
