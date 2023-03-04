@@ -12,7 +12,7 @@ use crate::utils::BigDataValueType;
 
 pub trait BigDataTableBaseConvenience<'a, TABLE, TPK>
 : BigDataTableBase<'a, TABLE, TPK>
-    where TPK: BigDataValueType + FromStr + Debug {
+    where TPK: BigDataValueType<TPK> + FromStr + Debug + Clone {
     fn get_pk_param(&self) -> google_bigquery2::api::QueryParameter;
     fn get_query_fields_str() -> String;
     fn get_query_fields_insert_str() -> String;
@@ -53,11 +53,11 @@ pub trait BigDataTableBaseConvenience<'a, TABLE, TPK>
 
     // async fn get_identifier_and_base_where_from_client(client: &'a BigqueryClient, pk_name: &str, table_name: &str) -> Result<(String, String), Box<dyn Error>>;
 
-    fn get_query_param<TField: BigDataValueType>(field_name: &str, field_value: &Option<TField>)
-                                                 -> google_bigquery2::api::QueryParameter;
+    fn get_query_param<TField: BigDataValueType<TField>>(field_name: &str, field_value: &Option<TField>)
+                                                         -> google_bigquery2::api::QueryParameter;
 
     fn parse_value_to_parameter<TValue>(value: &TValue) -> String
-        where TValue: std::fmt::Display + BigDataValueType;
+        where TValue: std::fmt::Display + BigDataValueType<TValue>;
 
     // fn create_from_table_row(client: &'a BigqueryClient,
     //                          row: &google_bigquery2::api::TableRow,
@@ -70,7 +70,7 @@ pub trait BigDataTableBaseConvenience<'a, TABLE, TPK>
 impl<'a, TABLE, TPK> BigDataTableBaseConvenience<'a, TABLE, TPK> for TABLE
     where
         TABLE: BigDataTableBase<'a, TABLE, TPK>,
-        TPK: BigDataValueType + FromStr + Debug,
+        TPK: BigDataValueType<TPK> + FromStr + Debug + Clone,
         <TPK as FromStr>::Err: Debug,
 {
     fn get_pk_param(&self) -> QueryParameter {
@@ -89,32 +89,36 @@ impl<'a, TABLE, TPK> BigDataTableBaseConvenience<'a, TABLE, TPK> for TABLE
         // }
     }
     fn get_query_fields_str() -> String {
-        Self::get_query_fields().values().into_iter()
+        let mut values = Self::get_query_fields().values()
+            .into_iter()
             .map(|v| format!("{}", v))
-            .collect::<Vec<String>>()
-            .join(", ")
+            .collect::<Vec<String>>();
+        values.sort();
+        values.join(", ")
     }
 
     fn get_query_fields_insert_str() -> String {
-        Self::get_query_fields()
+        let mut values = Self::get_query_fields()
             .values()
             .into_iter()
             .map(|v| format!("@__{}", v))
-            .collect::<Vec<String>>()
-            .join(", ")
+            .collect::<Vec<String>>();
+        values.sort();
+        values.join(", ")
     }
 
     fn get_query_fields_update_str(&self) -> String {
         let x = Self::get_query_fields();
         let pk_name = Self::get_pk_name();
-        let mut vec = x.values()
+        let mut values = x.values()
             .filter(|k| *k != &pk_name)
             .map(|k| format!("{} = @__{}", k, k))
             .collect::<Vec<String>>();
-        // vec.sort();
-        let update_str = vec.join(", ");
+        values.sort();
+        let update_str = values.join(", ");
         update_str
     }
+
     fn get_where_part(field_name: &str, is_comparing_to_null: bool) -> String {
         if is_comparing_to_null {
             format!("{} IS NULL", field_name)
@@ -147,7 +151,6 @@ impl<'a, TABLE, TPK> BigDataTableBaseConvenience<'a, TABLE, TPK> for TABLE
             }
             println!();
         }
-
 
         let (res, query_res) = client.get_client().jobs().query(req, project_id)
             .doit().await?;
@@ -218,12 +221,12 @@ impl<'a, TABLE, TPK> BigDataTableBaseConvenience<'a, TABLE, TPK> for TABLE
         Self::get_where_part(&pk_name, false)
     }
 
-    default fn get_query_param<TField: BigDataValueType>(field_name: &str, field_value: &Option<TField>) -> google_bigquery2::api::QueryParameter
+    default fn get_query_param<TField: BigDataValueType<TField>>(field_name: &str, field_value: &Option<TField>) -> google_bigquery2::api::QueryParameter
     {
         let type_to_string: String = TField::to_bigquery_type();
         let value: Option<google_bigquery2::api::QueryParameterValue> = Some(google_bigquery2::api::QueryParameterValue {
-            value:  match field_value {
-                Some(value) =>Some(value.to_bigquery_param_value()),//TODO: maybe add a way to use array types
+            value: match field_value {
+                Some(value) => Some(value.to_bigquery_param_value()),//TODO: maybe add a way to use array types
                 None => None,
             },
             ..Default::default()
@@ -240,7 +243,7 @@ impl<'a, TABLE, TPK> BigDataTableBaseConvenience<'a, TABLE, TPK> for TABLE
         }
     }
     fn parse_value_to_parameter<TValue>(value: &TValue) -> String
-        where TValue: std::fmt::Display + BigDataValueType
+        where TValue: std::fmt::Display + BigDataValueType<TValue>
     {
         return value.to_bigquery_param_value();
     }

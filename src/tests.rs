@@ -1,15 +1,12 @@
-use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::Display;
-
-use google_bigquery2::api::{QueryParameter, QueryParameterType, QueryResponse, TableRow};
 use google_bigquery_derive::BigDataTable;
 use google_bigquery_derive::HasBigQueryClient;
 
-use crate::client::{BigqueryClient, HasBigQueryClient};
 use crate::data::{BigDataTable, BigDataTableBase, BigDataTableBaseConvenience};
-use crate::utils::{BigDataValueType, ConvertTypeToBigQueryType, ConvertValueToBigqueryParamValue};
+use crate::client::HasBigQueryClient;
+use crate::utils::BigDataValueType;
+
+
+use crate::utils::ConvertValueToBigqueryParamValue;
 
 use super::*;
 
@@ -23,7 +20,7 @@ use super::*;
 async fn save() {
     let client = get_test_client().await;
 
-    let mut q = Infos::load_by_field(&client, stringify!(info1), Some("a"), 10).await.unwrap();
+    let mut q = Infos::load_by_field(&client, stringify!(info1), Some("a".to_string()), 10).await.unwrap();
     assert_eq!(q.len(), 1);
 
     let mut i1 = &mut q[0];
@@ -54,7 +51,7 @@ async fn save() {
 async fn load_by_field() {
     let client = get_test_client().await;
 
-    let q = Infos::load_by_field(&client, stringify!(info1), Some("a"), 10).await.unwrap();
+    let q = Infos::load_by_field(&client, stringify!(info1), Some("a".to_string()), 10).await.unwrap();
     assert_eq!(q.len(), 1);
 
     let i1 = &q[0];
@@ -78,7 +75,7 @@ async fn load_by_field() {
     assert_eq!(i4.info3, Some("cc".to_string()));
 
 
-    let q = Infos::load_by_field(&client, stringify!(info1), Some("aosdinsofnpsngusn"), 10).await.unwrap();
+    let q = Infos::load_by_field(&client, stringify!(info1), Some("aosdinsofnpsngusn".to_string()), 10).await.unwrap();
     assert_eq!(q.len(), 0);
 }
 
@@ -92,7 +89,7 @@ async fn load_by_field_none_param() {
 #[tokio::test]
 async fn from_pk() {
     let client = get_test_client().await;
-    let i1 = Infos::from_pk(&client, 3).await.unwrap();
+    let i1 = Infos::load_from_pk(&client, "3".to_string()).await.unwrap().unwrap();
     assert_eq!(i1.row_id, 3);
     assert_eq!(i1.info1, Some("a".to_string()));
     assert_eq!(i1.info3, Some("c".to_string()));
@@ -110,10 +107,12 @@ async fn get_test_client() -> BigqueryClient {
 #[cfg_attr(man_impl_has_client = "false", derive(HasBigQueryClient))]
 #[cfg_attr(not(man_impl = "true"), derive(BigDataTable))]
 pub struct Infos<'a> {
-    #[cfg_attr(not(man_impl = "true"), primary_key)]
     #[cfg_attr(not(man_impl = "true"), required)]
     #[cfg_attr(not(man_impl = "true"), db_name("Id"))]
     row_id: i64,
+    #[cfg_attr(not(man_impl = "true"), required)]
+    #[cfg_attr(not(man_impl = "true"), primary_key)]
+    row_ids: String,
     #[cfg_attr(any(not(man_impl = "true"), man_impl_has_client = "false"), client)]
     /// This client should never be left as None, doing so will cause a panic when trying to use it
     client: Option<&'a BigqueryClient>,
@@ -133,6 +132,16 @@ impl<'a> HasBigQueryClient<'a> for Infos<'a> {
         self.client.unwrap()
     }
 }
+//
+// impl<'a> BigDataTableHasPk<String> for Infos<'a> {
+//     fn get_pk_name() -> String {
+//         "row_ids".to_string()
+//     }
+//
+//     fn get_pk_value(&self) -> String {
+//         self.row_ids.clone()
+//     }
+// }
 
 impl<'a> Default for Infos<'a> {
     fn default() -> Self {
@@ -140,6 +149,7 @@ impl<'a> Default for Infos<'a> {
             // client: &BigqueryClient::new("none", "none", None).await.unwrap(),
             client: None,
             row_id: -9999,
+            row_ids: "-9999".to_string(),
             info1: Default::default(),
             info2: Default::default(),
             info3: Default::default(),

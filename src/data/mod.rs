@@ -6,6 +6,7 @@ use std::str::FromStr;
 use google_bigquery2::api::{QueryParameter, TableSchema};
 
 pub use big_data_table_base::BigDataTableBase;
+pub use big_data_table_base::BigDataTableHasPk;
 pub use big_data_table_base_convenience::BigDataTableBaseConvenience;
 
 use crate::client::{BigqueryClient, HasBigQueryClient};
@@ -14,22 +15,24 @@ use crate::utils::BigDataValueType;
 mod big_data_table_base_convenience;
 mod big_data_table_base;
 
-// pub trait BigDataTable<'a, TABLE, TPK: BigDataValueType + FromStr + Debug>: HasBigQueryClient<'a> + BigDataTableBaseConvenience<'a, TABLE, TPK> + BigDataTableBase<'a, TABLE, TPK> {
+// pub trait BigDataTable<'a, TABLE, TPK: BigDataValueType<TPK> + FromStr + Debug>: HasBigQueryClient<'a> + BigDataTableBaseConvenience<'a, TABLE, TPK> + BigDataTableBase<'a, TABLE, TPK> {
 pub trait BigDataTable<'a, TABLE, TPK>
 : HasBigQueryClient<'a>
++ BigDataTableHasPk<TPK>
 + BigDataTableBaseConvenience<'a, TABLE, TPK>
 + BigDataTableBase<'a, TABLE, TPK>
 + Default
-    where TPK: BigDataValueType + FromStr + Debug {
-    async fn from_pk(
+    where TPK: BigDataValueType<TPK> + FromStr + Debug + Clone {
+    async fn create_and_load_from_pk(
         client: &'a BigqueryClient,
         pk: TPK,
     ) -> Result<Self, Box<dyn Error>>
         where
             Self: Sized;
+    async fn load_from_pk(client: &'a BigqueryClient, pk: TPK) -> Result<Option<Self>, Box<dyn Error>> where Self: Sized;
     async fn save_to_bigquery(&self) -> Result<(), Box<dyn Error>>;
     async fn load_from_bigquery(&mut self) -> Result<(), Box<dyn Error>>;
-    async fn load_by_field<T: BigDataValueType>(client: &'a BigqueryClient, field_name: &str, field_value: Option<T>, max_amount: usize)
+    async fn load_by_field<T: BigDataValueType<T>>(client: &'a BigqueryClient, field_name: &str, field_value: Option<T>, max_amount: usize)
                                                 -> Result<Vec<TABLE>, Box<dyn Error>>;
 
     async fn load_by_custom_query(client: &'a BigqueryClient, query: &str, parameters: Vec<QueryParameter>, max_amount: usize)
@@ -38,14 +41,20 @@ pub trait BigDataTable<'a, TABLE, TPK>
 
 impl<'a, TABLE, TPK> BigDataTable<'a, TABLE, TPK> for TABLE
 where
-    TABLE: HasBigQueryClient<'a> + BigDataTableBaseConvenience<'a, TABLE, TPK> + Default,
-    TPK: BigDataValueType + FromStr + Debug,
+    TABLE: HasBigQueryClient<'a> + BigDataTableBaseConvenience<'a, TABLE, TPK> + Default + BigDataTableHasPk<TPK>,
+    TPK: BigDataValueType<TPK> + FromStr + Debug + Clone,
     <TPK as FromStr>::Err: Debug
 {
-    async fn from_pk(client: &'a BigqueryClient, pk: TPK) -> Result<Self, Box<dyn Error>> where Self: Sized {
+    async fn create_and_load_from_pk(client: &'a BigqueryClient, pk: TPK) -> Result<Self, Box<dyn Error>> where Self: Sized {
         let mut res = Self::create_with_pk(client, pk);
         res.load_from_bigquery().await?;
         Ok(res)
+    }
+
+    async fn load_from_pk(client: &'a BigqueryClient, pk: TPK) -> Result<Option<Self>, Box<dyn Error>> where Self: Sized {
+        let x = Self::load_by_field(client, &Self::get_pk_name(), Some(pk), 1).await
+            .map(|mut v| v.pop())?;
+        Ok(x)
     }
 
     async fn save_to_bigquery(&self) -> Result<(), Box<dyn Error>> {
@@ -100,10 +109,13 @@ where
 
         let query = match exists_row {
             true => format!("update {} set {} where {}", table_identifier, self.get_query_fields_update_str(), where_clause),
-            false => format!("insert into {} ({}, {}) values(@__{}, {})", table_identifier,
-                             Self::get_pk_name(),
+            // false => format!("insert into {} ({}, {}) values(@__{}, {})", table_identifier,
+            //                  Self::get_pk_name(),
+            //                  Self::get_query_fields_str(),
+            //                  Self::get_pk_name(),
+            //                  Self::get_query_fields_insert_str()),
+            false => format!("insert into {} ({}) values({})", table_identifier,
                              Self::get_query_fields_str(),
-                             Self::get_pk_name(),
                              Self::get_query_fields_insert_str()),
         };
 
@@ -148,13 +160,13 @@ where
             return Err(format!("Wrong amount of data returned! ({})", rows.len()).into());
         }
         let mut index_to_name_mapping: HashMap<String, usize> = get_name_index_mapping(query_res.schema);
-        println!("index_to_name_mapping: {:?}", index_to_name_mapping);
+        // println!("index_to_name_mapping: {:?}", index_to_name_mapping);
 
         let row = &rows[0];
         self.write_from_table_row(row, &index_to_name_mapping)
     }
 
-    async fn load_by_field<T: BigDataValueType>(client: &'a BigqueryClient, field_name: &str, field_value: Option<T>, max_amount: usize)
+    async fn load_by_field<T: BigDataValueType<T>>(client: &'a BigqueryClient, field_name: &str, field_value: Option<T>, max_amount: usize)
                                                 -> Result<Vec<TABLE>, Box<dyn Error>> {
         let field_name: String = field_name.into();
         let field_name = Self::get_field_name(&field_name).expect(format!("Field '{}' not found!", field_name).as_str());

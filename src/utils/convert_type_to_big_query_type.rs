@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 pub trait ConvertTypeToBigQueryType {
-    fn to_bigquery_type() -> String;
+    fn to_bigquery_type() -> String where Self: Sized;
 }
 
 impl ConvertTypeToBigQueryType for bool {
@@ -31,5 +31,12 @@ impl ConvertTypeToBigQueryType for String {
 impl ConvertTypeToBigQueryType for &str {
     fn to_bigquery_type() -> String {
         "STRING".to_string()
+    }
+}
+
+impl<T> ConvertTypeToBigQueryType for chrono::DateTime<T>
+where T: chrono::TimeZone + Display + Send + Sync + 'static {
+    fn to_bigquery_type() -> String {
+        "DATETIME".to_string()
     }
 }
