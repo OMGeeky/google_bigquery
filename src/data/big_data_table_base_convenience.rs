@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
 use std::str::FromStr;
+use async_trait::async_trait;
 
 use google_bigquery2::api::{QueryParameter, QueryParameterType, QueryParameterValue, QueryRequest};
 use google_bigquery2::hyper::{Body, Response};
@@ -10,9 +11,11 @@ use crate::client::BigqueryClient;
 use crate::data::BigDataTableBase;
 use crate::utils::BigDataValueType;
 
+#[async_trait]
 pub trait BigDataTableBaseConvenience<'a, TABLE, TPK>
 : BigDataTableBase<'a, TABLE, TPK>
-    where TPK: BigDataValueType<TPK> + FromStr + Debug + Clone {
+    where TPK: BigDataValueType<TPK> + FromStr + Debug + Clone,
+          TABLE: Sync {
     fn get_pk_param(&self) -> google_bigquery2::api::QueryParameter;
     fn get_query_fields_str() -> String;
     fn get_query_fields_insert_str() -> String;
@@ -42,13 +45,15 @@ pub trait BigDataTableBaseConvenience<'a, TABLE, TPK>
                                                  query: &str,
                                                  parameters: Vec<google_bigquery2::api::QueryParameter>,
                                                  project_id: &str)
-                                                 -> Result<google_bigquery2::api::QueryResponse, Box<dyn Error>>;
+                                                 -> Result<google_bigquery2::api::QueryResponse, Box<dyn Error>>
+        where TABLE: 'async_trait;
     //endregion
 
 
     // async fn get_identifier_and_base_where(&self) -> Result<(String, String), Box<dyn Error>>;
     async fn get_identifier(&self) -> Result<String, Box<dyn Error>>;
-    async fn get_identifier_from_client(client: &'a BigqueryClient) -> Result<String, Box<dyn Error>>;
+    async fn get_identifier_from_client(client: &'a BigqueryClient) -> Result<String, Box<dyn Error>>
+        where TABLE: 'async_trait;
     fn get_base_where() -> String;
 
     // async fn get_identifier_and_base_where_from_client(client: &'a BigqueryClient, pk_name: &str, table_name: &str) -> Result<(String, String), Box<dyn Error>>;
@@ -67,9 +72,10 @@ pub trait BigDataTableBaseConvenience<'a, TABLE, TPK>
     //         Self: Sized;
 }
 
+#[async_trait]
 impl<'a, TABLE, TPK> BigDataTableBaseConvenience<'a, TABLE, TPK> for TABLE
     where
-        TABLE: BigDataTableBase<'a, TABLE, TPK>,
+        TABLE:  BigDataTableBase<'a, TABLE, TPK> + Sync,
         TPK: BigDataValueType<TPK> + FromStr + Debug + Clone,
         <TPK as FromStr>::Err: Debug,
 {
@@ -221,7 +227,7 @@ impl<'a, TABLE, TPK> BigDataTableBaseConvenience<'a, TABLE, TPK> for TABLE
         Self::get_where_part(&pk_name, false)
     }
 
-    default fn get_query_param<TField: BigDataValueType<TField>>(field_name: &str, field_value: &Option<TField>) -> google_bigquery2::api::QueryParameter
+    fn get_query_param<TField: BigDataValueType<TField>>(field_name: &str, field_value: &Option<TField>) -> google_bigquery2::api::QueryParameter
     {
         let type_to_string: String = TField::to_bigquery_type();
         let value: Option<google_bigquery2::api::QueryParameterValue> = Some(google_bigquery2::api::QueryParameterValue {

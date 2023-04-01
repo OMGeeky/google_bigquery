@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt::{Debug, Display};
 use std::str::FromStr;
 
+use async_trait::async_trait;
 use google_bigquery2::api::{QueryParameter, TableSchema};
 
 pub use big_data_table_base::BigDataTableBase;
@@ -16,42 +17,52 @@ mod big_data_table_base_convenience;
 mod big_data_table_base;
 
 // pub trait BigDataTable<'a, TABLE, TPK: BigDataValueType<TPK> + FromStr + Debug>: HasBigQueryClient<'a> + BigDataTableBaseConvenience<'a, TABLE, TPK> + BigDataTableBase<'a, TABLE, TPK> {
+#[async_trait]
 pub trait BigDataTable<'a, TABLE, TPK>
 : HasBigQueryClient<'a>
 + BigDataTableHasPk<TPK>
 + BigDataTableBaseConvenience<'a, TABLE, TPK>
 + BigDataTableBase<'a, TABLE, TPK>
 + Default
-    where TPK: BigDataValueType<TPK> + FromStr + Debug + Clone {
+    where TPK: BigDataValueType<TPK> + FromStr + Debug + Clone + Send,
+          TABLE: Sync + Send {
     async fn create_and_load_from_pk(
         client: &'a BigqueryClient,
         pk: TPK,
     ) -> Result<Self, Box<dyn Error>>
         where
-            Self: Sized;
-    async fn load_from_pk(client: &'a BigqueryClient, pk: TPK) -> Result<Option<Self>, Box<dyn Error>> where Self: Sized;
+            Self: Sized,
+            TPK: 'async_trait;
+    async fn load_from_pk(client: &'a BigqueryClient, pk: TPK) -> Result<Option<Self>, Box<dyn Error>> where Self: Sized,
+                                                                                                             TPK: 'async_trait;
     async fn save_to_bigquery(&self) -> Result<(), Box<dyn Error>>;
     async fn load_from_bigquery(&mut self) -> Result<(), Box<dyn Error>>;
-    async fn load_by_field<T: BigDataValueType<T>>(client: &'a BigqueryClient, field_name: &str, field_value: Option<T>, max_amount: usize)
-                                                -> Result<Vec<TABLE>, Box<dyn Error>>;
+    async fn load_by_field<T: BigDataValueType<T> + Send>(client: &'a BigqueryClient, field_name: &str, field_value: Option<T>, max_amount: usize)
+                                                          -> Result<Vec<TABLE>, Box<dyn Error>>
+        where TABLE: 'async_trait;
 
     async fn load_by_custom_query(client: &'a BigqueryClient, query: &str, parameters: Vec<QueryParameter>, max_amount: usize)
-                                  -> Result<Vec<TABLE>, Box<dyn Error>>;
+                                  -> Result<Vec<TABLE>, Box<dyn Error>>
+        where TABLE: 'async_trait;
 }
 
+#[async_trait]
 impl<'a, TABLE, TPK> BigDataTable<'a, TABLE, TPK> for TABLE
-where
-    TABLE: HasBigQueryClient<'a> + BigDataTableBaseConvenience<'a, TABLE, TPK> + Default + BigDataTableHasPk<TPK>,
-    TPK: BigDataValueType<TPK> + FromStr + Debug + Clone,
-    <TPK as FromStr>::Err: Debug
+    where
+        TABLE: HasBigQueryClient<'a> + BigDataTableBaseConvenience<'a, TABLE, TPK> + Default + BigDataTableHasPk<TPK> + Sync + Send,
+        TPK: BigDataValueType<TPK> + FromStr + Debug + Clone + Send,
+        <TPK as FromStr>::Err: Debug
 {
-    async fn create_and_load_from_pk(client: &'a BigqueryClient, pk: TPK) -> Result<Self, Box<dyn Error>> where Self: Sized {
+    async fn create_and_load_from_pk(client: &'a BigqueryClient, pk: TPK) -> Result<Self, Box<dyn Error>> where Self: Sized,
+                                                                                                                TPK: 'async_trait {
         let mut res = Self::create_with_pk(client, pk);
         res.load_from_bigquery().await?;
         Ok(res)
     }
 
-    async fn load_from_pk(client: &'a BigqueryClient, pk: TPK) -> Result<Option<Self>, Box<dyn Error>> where Self: Sized {
+    async fn load_from_pk(client: &'a BigqueryClient, pk: TPK) -> Result<Option<Self>, Box<dyn Error>>
+        where Self: Sized,
+              TPK: 'async_trait {
         let x = Self::load_by_field(client, &Self::get_pk_name(), Some(pk), 1).await
             .map(|mut v| v.pop())?;
         Ok(x)
@@ -144,7 +155,7 @@ where
 
     async fn load_from_bigquery(&mut self) -> Result<(), Box<dyn Error>> {
         let project_id = self.get_client().get_project_id();
-        let table_identifier  = self.get_identifier().await?;
+        let table_identifier = self.get_identifier().await?;
         let where_clause = Self::get_base_where();
 
         let query = format!("select {} from {} where {} limit 1", Self::get_query_fields_str(), table_identifier, where_clause);
@@ -166,14 +177,15 @@ where
         self.write_from_table_row(row, &index_to_name_mapping)
     }
 
-    async fn load_by_field<T: BigDataValueType<T>>(client: &'a BigqueryClient, field_name: &str, field_value: Option<T>, max_amount: usize)
-                                                -> Result<Vec<TABLE>, Box<dyn Error>> {
+    async fn load_by_field<T: BigDataValueType<T> + Send>(client: &'a BigqueryClient, field_name: &str, field_value: Option<T>, max_amount: usize)
+                                                          -> Result<Vec<TABLE>, Box<dyn Error>>
+    {
         let field_name: String = field_name.into();
         let field_name = Self::get_field_name(&field_name).expect(format!("Field '{}' not found!", field_name).as_str());
         let where_clause = Self::get_where_part(&field_name, field_value.is_none());
         // let where_clause = format!(" {} = @__{}", field_name, field_name);
         let table_identifier = Self::get_identifier_from_client(client).await?;
-        let query = format!("select {} from {} where {} limit {}",  Self::get_query_fields_str(), table_identifier, where_clause, max_amount);
+        let query = format!("select {} from {} where {} limit {}", Self::get_query_fields_str(), table_identifier, where_clause, max_amount);
 
         let mut params = vec![];
         if !(field_value.is_none()) {
@@ -184,7 +196,6 @@ where
 
     async fn load_by_custom_query(client: &'a BigqueryClient, query: &str, parameters: Vec<QueryParameter>, max_amount: usize)
                                   -> Result<Vec<TABLE>, Box<dyn Error>> {
-
         let project_id = client.get_project_id();
         let query_res: google_bigquery2::api::QueryResponse = Self::run_get_query_with_params_on_client(client, &query, parameters, project_id).await?;
 

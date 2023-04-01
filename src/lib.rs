@@ -1,5 +1,3 @@
-#![feature(async_fn_in_trait)]
-#![feature(specialization)]
 #![allow(unused)]
 #![allow(incomplete_features)]
 
