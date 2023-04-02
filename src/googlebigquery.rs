@@ -20,7 +20,7 @@ pub async fn get_client<S: Into<String>>(
         None => "auth/service_account2.json".to_string(),
         Some(s) => s.into(),
     };
-    let secret = oauth2::read_service_account_key(service_account_path)
+    let secret = oauth2::read_service_account_key(&service_account_path)
         .await
         .expect(format!("Failed to read service account key from file. {}", service_account_path).as_str());
     let auth = oauth2::ServiceAccountAuthenticator::builder(secret)
