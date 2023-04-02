@@ -22,11 +22,11 @@ pub async fn get_client<S: Into<String>>(
     };
     let secret = oauth2::read_service_account_key(service_account_path)
         .await
-        .unwrap();
+        .expect(format!("Failed to read service account key from file. {}", service_account_path).as_str());
     let auth = oauth2::ServiceAccountAuthenticator::builder(secret)
         .build()
         .await
-        .unwrap();
+        .expect("Failed to authenticate with service account key.");
     let client: Bigquery<HttpsConnector<HttpConnector>> = Bigquery::new(hyper_client, auth);
 
     Ok(client)
